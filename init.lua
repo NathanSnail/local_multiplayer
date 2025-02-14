@@ -208,6 +208,12 @@ local function key_pressed(key)
 	return pressed
 end
 
+---@param b boolean
+---@return integer
+local function int(b)
+	return b and 1 or 0
+end
+
 ---@enum
 local val = {
 	counter = 1,
@@ -230,33 +236,16 @@ local multiplayer_brain = make_global(function(body)
 	local cursor = { x = body.values[val.cursor_x], y = body.values[val.cursor_y] }
 	local old_player = { x = body.values[val.player_x], y = body.values[val.player_y] }
 
-	local forward = 0
-	local rotation = 0
-	if key_pressed(key_codes.U) then
-		forward = forward + 1
-	end
-	if key_pressed(key_codes.J) then
-		forward = forward - 1
-	end
-	if key_pressed(key_codes.H) then
-		rotation = rotation + 1
-	end
-	if key_pressed(key_codes.K) then
-		rotation = rotation - 1
-	end
+	local forward = int(key_pressed(key_codes.U)) - int(key_pressed(key_codes.J))
+	local rotation = int(key_pressed(key_codes.H)) - int(key_pressed(key_codes.K))
 
-	if key_pressed(key_codes.VK_LEFT) then
-		cursor.x = cursor.x - 1
-	end
-	if key_pressed(key_codes.VK_RIGHT) then
-		cursor.x = cursor.x + 1
-	end
-	if key_pressed(key_codes.VK_UP) then
-		cursor.y = cursor.y + 1
-	end
-	if key_pressed(key_codes.VK_DOWN) then
-		cursor.y = cursor.y - 1
-	end
+	cursor.x = cursor.x + int(key_pressed(key_codes.VK_RIGHT)) - int(key_pressed(key_codes.VK_LEFT))
+	cursor.y = cursor.y + int(key_pressed(key_codes.VK_UP)) - int(key_pressed(key_codes.VK_DOWN))
+
+	local ability = key_pressed(key_codes.I)
+	local grab_weight = int(key_pressed(key_codes.O)) - int(key_pressed(key_codes.P))
+	local grab_mul = grab_weight == -1 and -1 or 1
+	local grab_abs = grab_weight * grab_mul
 
 	local player_id = get_player_body_id()
 	if player_id then
@@ -274,6 +263,12 @@ local multiplayer_brain = make_global(function(body)
 	draw_circle(cursor.x, cursor.y)
 	brain.movement = forward
 	brain.rotation = rotation
+	brain.ability = ability
+	brain.grab_target_x = cursor.x -- * grab_mul
+	brain.grab_target_y = cursor.y -- * grab_mul
+	brain.grab_weight = grab_abs
+	brain.grab_dir = grab_weight
+
 	brain.values = {}
 	brain.values[val.cursor_x] = cursor.x
 	brain.values[val.cursor_y] = cursor.y
@@ -298,7 +293,7 @@ function M.post(api, _)
 
 		register_creature(
 			api.acquire_id("local_multiplayer.multiplayer_creature"),
-			"body plans/antenna_bug.bod",
+			"body plans/start_player.bod",
 			multiplayer_brain,
 			multiplayer_spawn
 		)
