@@ -1,5 +1,9 @@
 ---@type mod_calllbacks
 local M = { api_version = 2, version = "0.0.0" }
+dofile_once("data/scripts/lua_mods/mods/local_multiplayer/cdef.lua")
+dofile_once("data/scripts/lua_mods/mods/local_multiplayer/types.lua")
+
+local ffi = require("ffi")
 
 local global_n = 0
 ---@param impl function
@@ -17,6 +21,13 @@ local function int(b)
 	return b and 1 or 0
 end
 
+---We don't know what thread the brain runs in, so we need to make sure that the api we use is available
+---@type unsafe_api
+local unsafe_api = dofile_once("data/scripts/lua_mods/unsafe_api.lua")
+
+local mem_name = "local_multiplayer.shared_memory"
+local mem_size = 4096
+
 ---@enum
 local val = {
 	counter = 1,
@@ -24,28 +35,44 @@ local val = {
 	cursor_y = 3,
 	player_x = 4,
 	player_y = 5,
+	managed_player = 6,
 }
 
----@type body_id?
-local og_player
+local function manager_thread()
+	while true do
+		ffi.C.Sleep(10)
+	end
+end
 
----We don't know what thread the brain runs in, so we need to make sure that the api we use is available
----@type unsafe_api
-local unsafe_api = dofile_once("data/scripts/lua_mods/unsafe_api.lua")
+---@type MultiplayerManager
+local manager
 
 local multiplayer_brain = make_global(function(body)
 	---@cast body body
 	-- lsp doesn't work with annotations of types on anonymous functions
 	---@type brain
-	local brain = {}
-
-	if not og_player then
-		og_player = get_player_body_id()
-	end
+	local brain = { values = {} }
 
 	local our_counter = body.values[val.counter]
 	if our_counter ~= 1 then
 		return brain -- when the api supports more stuff we will destroy ourself here
+	end
+
+	local player = get_player_body_id()
+	if body.values[val.managed_player] ~= 1 and player then
+		brain.values[val.managed_player] = 1
+		local file_handle = ffi.C.OpenFileMappingA(0x06, false, mem_name) -- readwrite open the mapping
+		local mem_view = ffi.cast("MultiplayerManager *", ffi.C.MapViewOfFile(file_handle, 0x06, 0, 0, mem_size)) --[[@as MultiplayerManager]]
+		print(mem_view)
+
+		if mem_view.cur_player_idx == -1 then
+			mem_view.player_ids[mem_view.n_players] = player
+			mem_view.n_players = mem_view.n_players + 1 -- casual race condition, mutex sounds like too much hassle
+			mem_view.cur_player_idx = mem_view.n_players - 1
+		end
+
+		ffi.C.UnmapViewOfFile(mem_view) -- we need to do this if we are no fun and don't want to leak mem
+		ffi.C.CloseHandle(file_handle)
 	end
 
 	local cursor = { x = body.values[val.cursor_x], y = body.values[val.cursor_y] }
@@ -77,44 +104,58 @@ local multiplayer_brain = make_global(function(body)
 		end
 	end
 
-	if unsafe_api.key_pressed(KEY_CODES.N_0) then
-		unsafe_api.set_player_body_id(body.id)
-	end
-
 	draw_circle(cursor.x, cursor.y)
 	brain.movement = forward
 	brain.rotation = rotation
 	brain.ability = ability
-	brain.grab_target_x = cursor.x -- * grab_mul
-	brain.grab_target_y = cursor.y -- * grab_mul
+	brain.grab_target_x = cursor.x
+	brain.grab_target_y = cursor.y
 	brain.grab_weight = grab_abs
 	brain.grab_dir = grab_weight
 
-	brain.values = {}
 	brain.values[val.cursor_x] = cursor.x
 	brain.values[val.cursor_y] = cursor.y
 	brain.values[val.player_x] = old_player.x
 	brain.values[val.player_y] = old_player.y
+
 	return brain
 end)
 
 local counter = 0
 
+-- this runs in the same thread as the first call of creature_list, so we can use it
 local multiplayer_spawn = make_global(function(body_id)
 	---@cast body_id body_id
 	counter = counter + 1
 	if counter == 1 then
+		manager.player_ids[manager.n_players] = body_id
+		manager.n_players = manager.n_players + 1
+
+		print("bt: ", ffi.C.GetCurrentThreadId())
 		print(body_id)
 	end
 	-- all the spawns seem to be on the same thread, so we can safely have a global in our lua_State*
-	return { counter }
+	return { [val.counter] = counter, [val.managed_player] = 0 }
 end)
 
+local done_manager_creation = false
 -- post hook is for defining creatures
 function M.post(api, _)
 	local old_creature_list = creature_list
 	creature_list = function(...)
-		-- io.popen("Z:\\home\\nathan\\Documents\\CE\\Cheat_Engine.exe")
+		if not done_manager_creation then
+			done_manager_creation = true -- pretty sure theres a race condition here, its good enough for now
+			print("mt: ", ffi.C.GetCurrentThreadId())
+			io.popen("Z:\\home\\nathan\\Documents\\CE\\Cheat_Engine.exe")
+			local file_mapping = ffi.C.CreateFileMappingA(nil, nil, 0x04, 0, mem_size, mem_name) -- creature a virtual file with 4kb backing size, readwrite perms
+			local mem_view = ffi.C.MapViewOfFile(file_mapping, 0x06, 0, 0, mem_size) -- readwrite access the mem
+			manager = ffi.cast("MultiplayerManager *", mem_view) --[[@as MultiplayerManager]]
+			print(manager)
+			manager.cur_player_idx = -1
+			manager.n_players = 0
+
+			ffi.C.CreateThread(nil, 8096 * 1024, manager_thread, nil, 0, nil)
+		end
 		local r = { old_creature_list(...) }
 
 		register_creature(
