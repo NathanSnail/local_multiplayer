@@ -25,9 +25,6 @@ end
 ---@type unsafe_api
 local unsafe_api = dofile_once("data/scripts/lua_mods/unsafe_api.lua")
 
-local mem_name = "local_multiplayer.shared_memory"
-local mem_size = 4096
-
 ---@enum
 local val = {
 	counter = 1,
@@ -38,9 +35,48 @@ local val = {
 	managed_player = 6,
 }
 
+-- NOTE: keep in sync with manager_thread
+local mem_name = "local_multiplayer.shared_memory"
+local mem_size = 4096
+
 local function manager_thread()
+	-- we can't safely read any data not in this thread, so recreate things here
+	---@diagnostic disable-next-line: redefined-local
+	local mem_name = "local_multiplayer.shared_memory"
+	---@diagnostic disable-next-line: redefined-local
+	local mem_size = 4096
+	---@diagnostic disable-next-line: redefined-local
+	local ffi = require("ffi")
+	dofile("data/scripts/lua_mods/mods/local_multiplayer/cdef.lua")
+	dofile("data/scripts/lua_mods/mods/local_multiplayer/types.lua")
+
+	local file_handle = ffi.C.OpenFileMappingA(0x06, false, mem_name) -- readwrite open the mapping
+	local mem_view = ffi.cast("MultiplayerManager *", ffi.C.MapViewOfFile(file_handle, 0x06, 0, 0, mem_size)) --[[@as MultiplayerManager]]
+
+	---This variant doesn't throw, instead will just corrupt memory
+	---@param id body_id
+	local function set_player_body_id(id)
+		local p_player_body_id = ffi.cast("int *", mem_view.config.player_body_id_addr)
+		p_player_body_id[0] = id
+	end
+
+	---Returns whether the key is currently pressed, not tied to the framerate.
+	---@param code key_code
+	---@return boolean
+	local function key_pressed(code)
+		local state = ffi.C.GetAsyncKeyState(code)
+		local pressed = bit.band(state, bit.lshift(1, 15)) ~= 0
+		return pressed
+	end
+
 	while true do
-		ffi.C.Sleep(10)
+		ffi.C.Sleep(1)
+		local down = key_pressed(mem_view.config.swap_key)
+		if not mem_view.swap_down_last_frame and down then
+			mem_view.cur_player_idx = (mem_view.cur_player_idx + 1) % mem_view.n_players
+			set_player_body_id(mem_view.player_ids[mem_view.cur_player_idx])
+		end
+		mem_view.swap_down_last_frame = down
 	end
 end
 
@@ -146,15 +182,20 @@ function M.post(api, _)
 		if not done_manager_creation then
 			done_manager_creation = true -- pretty sure theres a race condition here, its good enough for now
 			print("mt: ", ffi.C.GetCurrentThreadId())
-			io.popen("Z:\\home\\nathan\\Documents\\CE\\Cheat_Engine.exe")
+			-- io.popen("Z:\\home\\nathan\\Documents\\CE\\Cheat_Engine.exe")
 			local file_mapping = ffi.C.CreateFileMappingA(nil, nil, 0x04, 0, mem_size, mem_name) -- creature a virtual file with 4kb backing size, readwrite perms
 			local mem_view = ffi.C.MapViewOfFile(file_mapping, 0x06, 0, 0, mem_size) -- readwrite access the mem
 			manager = ffi.cast("MultiplayerManager *", mem_view) --[[@as MultiplayerManager]]
 			print(manager)
 			manager.cur_player_idx = -1
 			manager.n_players = 0
+			manager.config.swap_key = KEY_CODES.N_0
+			manager.config.player_body_id_addr = unsafe_api.addrs.player_body_addr
 
-			ffi.C.CreateThread(nil, 8096 * 1024, manager_thread, nil, 0, nil)
+			package.cpath = package.cpath .. ";./data/scripts/lua_mods/mods/local_multiplayer/?.dll"
+			local effil = require("effil")
+			local thread = effil.thread(manager_thread)()
+			print(thread)
 		end
 		local r = { old_creature_list(...) }
 

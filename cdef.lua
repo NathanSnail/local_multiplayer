@@ -133,11 +133,6 @@ typedef struct _SECURITY_ATTRIBUTES {
 	BOOL bInheritHandle;
 } SECURITY_ATTRIBUTES, *PSECURITY_ATTRIBUTES, *LPSECURITY_ATTRIBUTES;
 
-HANDLE __stdcall CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes,
-				   SIZE_T dwStackSize,
-				   LPTHREAD_START_ROUTINE lpStartAddress,
-				   LPVOID lpParameter, DWORD dwCreationFlags,
-				   LPDWORD lpThreadId);
 
 DWORD GetCurrentThreadId();
 
@@ -147,4 +142,5 @@ LPVOID MapViewOfFile(HANDLE hFileMappingObject, DWORD dwDesiredAccess, DWORD dwF
 HANDLE OpenFileMappingA(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCSTR lpName);
 BOOL UnmapViewOfFile(LPVOID lpBaseAddress);
 BOOL CloseHandle(HANDLE hObject);
+USHORT GetAsyncKeyState(int vKey);
 ]])
